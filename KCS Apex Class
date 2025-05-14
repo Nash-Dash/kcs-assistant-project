@@ -1,0 +1,151 @@
+public with sharing class GeminiKCSCallout2 {
+
+    @InvocableMethod(label='Call Gemini API' description='Sends HTTP input to Gemini API and gets structured KCS data')
+    public static List<GeminiKCSCallout2Response> callGeminiAPI(List<GeminiKCSCallout2Request> requests) {
+        List<GeminiKCSCallout2Response> responses = new List<GeminiKCSCallout2Response>();
+
+        for (GeminiKCSCallout2Request request : requests) {
+            try {
+                HttpRequest httpRequest = new HttpRequest();
+                httpRequest.setEndpoint('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=YOUR API KEY');
+                httpRequest.setMethod('POST');
+                httpRequest.setHeader('Content-Type', 'application/json');
+
+                // Build 'contents'
+                List<Map<String, Object>> contents = new List<Map<String, Object>>();
+                contents.add(new Map<String, Object>{
+                    'role' => 'user',
+                    'parts' => new List<Map<String, Object>> {
+                        new Map<String, Object> {
+                            'text' => request.Http_Input
+                        }
+                    }
+                });
+
+                // Build 'generationConfig'
+                Map<String, Object> generationConfig = new Map<String, Object>{
+                    'temperature' => 0.4,
+                    'responseMimeType' => 'application/json',
+                    'responseSchema' => new Map<String, Object>{
+                        'type' => 'object',
+                        'properties' => new Map<String, Object>{
+                            'Title of the issue' => new Map<String, Object>{ 'type' => 'string' },
+                            'Environment' => new Map<String, Object>{ 'type' => 'string' },
+                            'Summary of the Issue' => new Map<String, Object>{ 'type' => 'string' },
+                            'Cause' => new Map<String, Object>{ 'type' => 'string' },
+                            'Troubleshooting Steps Taken' => new Map<String, Object>{ 'type' => 'string' },
+                            'Resolution' => new Map<String, Object>{ 'type' => 'string' },
+                            'KCS Tags' => new Map<String, Object>{
+                                'type' => 'array',
+                                'items' => new Map<String, Object>{
+                                    'type' => 'object',
+                                    'properties' => new Map<String, Object>{
+                                        'tag_value' => new Map<String, Object>{ 'type' => 'string' }
+                                    }
+                                }
+                            }
+                        },
+                        'required' => new List<String>{
+                            'Title of the issue',
+                            'Environment',
+                            'Summary of the Issue',
+                            'Cause',
+                            'Troubleshooting Steps Taken',
+                            'Resolution',
+                            'KCS Tags'
+                        }
+                    }
+                };
+
+                Map<String, Object> payload = new Map<String, Object>{
+                    'contents' => contents,
+                    'generationConfig' => generationConfig
+                };
+
+                httpRequest.setBody(JSON.serialize(payload));
+                Http http = new Http();
+                HttpResponse httpResponse = http.send(httpRequest);
+
+                if (httpResponse.getStatusCode() == 200) {
+                    String responseBody = httpResponse.getBody();
+                    System.debug('🌟 Full Response: ' + responseBody);
+
+                    Map<String, Object> fullResponse = (Map<String, Object>) JSON.deserializeUntyped(responseBody);
+                    List<Object> candidates = (List<Object>) fullResponse.get('candidates');
+                    if (candidates == null || candidates.isEmpty()) {
+                        throw new CustomException('No candidates returned from API');
+                    }
+
+                    Map<String, Object> firstCandidate = (Map<String, Object>) candidates[0];
+                    Map<String, Object> content = (Map<String, Object>) firstCandidate.get('content');
+                    List<Object> parts = (List<Object>) content.get('parts');
+                    Map<String, Object> firstPart = (Map<String, Object>) parts[0];
+                    String innerJsonString = (String) firstPart.get('text');
+
+                    System.debug('📦 Extracted Inner JSON: ' + innerJsonString);
+
+                    Map<String, Object> finalData = (Map<String, Object>) JSON.deserializeUntyped(innerJsonString);
+
+                    GeminiKCSCallout2Response resp = new GeminiKCSCallout2Response();
+                    resp.environment = (String) finalData.get('Environment');
+                    resp.cause = (String) finalData.get('Cause');
+                    resp.troubleshootingStepsTaken = (String) finalData.get('Troubleshooting Steps Taken');
+                    resp.resolution = (String) finalData.get('Resolution');
+                    resp.summaryOfTheIssue = (String) finalData.get('Summary of the Issue');
+                    resp.titleOfTheIssue = (String) finalData.get('Title of the issue');
+
+                    // Map KCS Tags correctly
+                    List<Object> rawTags = (List<Object>) finalData.get('KCS Tags');
+                    List<GeminiKCSCallout2KCSTag> tags = new List<GeminiKCSCallout2KCSTag>();
+                    List<String> tagValues = new List<String>();
+
+                    for (Object rawTagObj : rawTags) {
+                        Map<String, Object> rawTag = (Map<String, Object>) rawTagObj;
+                        GeminiKCSCallout2KCSTag tag = new GeminiKCSCallout2KCSTag();
+                        tag.tagValue = (String) rawTag.get('tag_value');
+                        tags.add(tag);
+                        tagValues.add(tag.tagValue);
+                    }
+
+                    resp.kcsTags = tags;
+                    resp.tagsAsString = String.join(tagValues, ', '); // ✅ Comma-separated list of tag values
+
+                    responses.add(resp);
+                } else {
+                    System.debug('❌ Callout Failed: ' + httpResponse.getStatus() + ' ' + httpResponse.getBody());
+                    throw new CustomException('Gemini API call failed: ' + httpResponse.getBody());
+                }
+            } catch (Exception e) {
+                System.debug('🚨 Error: ' + e.getMessage());
+                throw new CustomException('Error calling Gemini API: ' + e.getMessage());
+            }
+        }
+
+        return responses;
+    }
+
+    public class GeminiKCSCallout2Request {
+        @InvocableVariable(label='Case Id')
+        public Id caseId;
+
+        @InvocableVariable(label='Http Input')
+        public String Http_Input;
+    }
+
+    public class GeminiKCSCallout2Response {
+        @InvocableVariable public String environment;
+        @InvocableVariable public String cause;
+        @InvocableVariable public String troubleshootingStepsTaken;
+        @InvocableVariable public String resolution;
+        @InvocableVariable public String summaryOfTheIssue;
+        @InvocableVariable public String titleOfTheIssue;
+        @InvocableVariable public List<GeminiKCSCallout2KCSTag> kcsTags;
+        @InvocableVariable public String tagsAsString; // ✅ New field
+    }
+
+    public class GeminiKCSCallout2KCSTag {
+        @InvocableVariable public String tagValue;
+    }
+
+    public class CustomException extends Exception {}
+}
